@@ -1,0 +1,33 @@
+# Secrets — NEVER commit
+.env
+.env.local
+.streamlit/secrets.toml
+
+# Data — DB has PII (phones, names, emails)
+data/leads.db
+data/leads.db-journal
+data/leads.db-shm
+data/leads.db-wal
+data/auto_discover.log
+data/auto_discover.pid
+data/auto_discover_status.json
+data/auto_discover_queue.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/cache/
+
+# Generated
+*.csv
+qa_test.py
