@@ -797,8 +797,15 @@ def _migrate_schema(conn):
 
 def get_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    # Allow concurrent threads/processes (daemon writes + portal reads/writes)
+    conn = sqlite3.connect(str(DB_PATH), timeout=15.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # WAL mode = multiple readers + 1 writer concurrently (vs default = exclusive lock)
+    conn.execute("PRAGMA journal_mode=WAL")
+    # If still hitting busy, wait up to 15s instead of immediate failure
+    conn.execute("PRAGMA busy_timeout=15000")
+    # Reduce fsync frequency for ~2x write speed (safe for our use case)
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
     _migrate_schema(conn)
     conn.commit()
