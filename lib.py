@@ -809,8 +809,30 @@ def get_db():
 ALLOWED_UPDATE_COLS = {"status", "sent_at", "replied", "booked_demo", "notes", "ig_handle", "fb_page", "script", "email", "last_channel", "linkedin_url"}
 
 
+def extract_contacts_from_website(website_url, timeout=8):
+    """Fetch website HTML once, extract email + ig_handle + linkedin_url.
+    Returns dict with those 3 keys (values None if not found / website unreachable)."""
+    out = {"email": None, "ig_handle": None, "linkedin_url": None}
+    if not website_url:
+        return out
+    try:
+        r = requests.get(
+            website_url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+            allow_redirects=True,
+        )
+        html = r.text or ""
+    except Exception:
+        return out
+    out["email"] = extract_email(html)
+    out["ig_handle"] = extract_ig_handle(html)
+    out["linkedin_url"] = extract_linkedin_url(html)
+    return out
+
+
 def discover_and_draft(niche, area, count, mode, apify_token, gemini_key, progress_callback=None, scrape_progress_callback=None):
-    """Run scrape + filter + draft + insert pipeline. Returns (inserted, skipped_dup)."""
+    """Run scrape + filter + extract contacts + draft + insert pipeline. Returns (inserted, skipped_dup)."""
     raw = scrape_gmaps(niche, area, count, apify_token, scrape_progress_callback)
     filtered = filter_results(raw, count)
 
@@ -822,6 +844,9 @@ def discover_and_draft(niche, area, count, mode, apify_token, gemini_key, progre
         if progress_callback:
             progress_callback(i, len(filtered), biz["name"])
 
+        # Single website fetch → extract email + IG + LinkedIn
+        contacts = extract_contacts_from_website(biz.get("website"))
+
         script = draft_message(biz, niche, mode, gemini_key)
         link_text = script if mode == "text" else "Hi！我啱啱 send 咗個 voice memo 你，得閒聽吓 :)"
         deeplink = wa_deeplink(biz["phone"], link_text)
@@ -830,13 +855,15 @@ def discover_and_draft(niche, area, count, mode, apify_token, gemini_key, progre
             conn.execute(
                 """
                 INSERT INTO leads
-                (phone, name, niche, area, address, rating, reviews, categories, website, script, wa_deeplink)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (phone, name, niche, area, address, rating, reviews, categories, website,
+                 script, wa_deeplink, email, ig_handle, linkedin_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     biz["phone"], biz["name"], niche, area, biz["address"],
                     biz["rating"], biz["reviews"], biz["categories"], biz["website"],
                     script, deeplink,
+                    contacts["email"], contacts["ig_handle"], contacts["linkedin_url"],
                 ),
             )
             inserted += 1
@@ -849,6 +876,40 @@ def discover_and_draft(niche, area, count, mode, apify_token, gemini_key, progre
     conn.commit()
     conn.close()
     return inserted, skipped
+
+
+def backfill_contacts(progress_callback=None):
+    """Run extract_contacts on all leads missing email/ig/linkedin. Updates DB.
+    Returns (touched, email_added, ig_added, linkedin_added)."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, website, email, ig_handle, linkedin_url FROM leads "
+        "WHERE website IS NOT NULL AND website != '' "
+        "AND (email IS NULL OR ig_handle IS NULL OR linkedin_url IS NULL)"
+    ).fetchall()
+    touched = 0
+    em_n = ig_n = li_n = 0
+    for i, row in enumerate(rows):
+        if progress_callback:
+            progress_callback(i, len(rows), row["name"])
+        contacts = extract_contacts_from_website(row["website"])
+        updates = {}
+        if not row["email"] and contacts["email"]:
+            updates["email"] = contacts["email"]
+            em_n += 1
+        if not row["ig_handle"] and contacts["ig_handle"]:
+            updates["ig_handle"] = contacts["ig_handle"]
+            ig_n += 1
+        if not row["linkedin_url"] and contacts["linkedin_url"]:
+            updates["linkedin_url"] = contacts["linkedin_url"]
+            li_n += 1
+        if updates:
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(f"UPDATE leads SET {sets} WHERE id = ?", list(updates.values()) + [row["id"]])
+            touched += 1
+    conn.commit()
+    conn.close()
+    return touched, em_n, ig_n, li_n
 
 
 def get_leads(status_filter=None, niche_filter=None, search=None, limit=500):

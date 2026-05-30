@@ -222,6 +222,33 @@ elif page == "📥 Inbox":
 
     st.caption(f"{len(leads)} leads matching filters")
 
+    # === Backfill contacts (email / IG / LinkedIn) from websites ===
+    conn_bf = lib.get_db()
+    missing = conn_bf.execute(
+        "SELECT COUNT(*) FROM leads WHERE website IS NOT NULL AND website != '' "
+        "AND (email IS NULL OR ig_handle IS NULL OR linkedin_url IS NULL)"
+    ).fetchone()[0]
+    conn_bf.close()
+    if missing > 0:
+        bf1, bf2 = st.columns([3, 1])
+        with bf1:
+            st.info(
+                f"🔍 {missing} leads missing email / IG / LinkedIn — auto-scrape from their websites (~{missing * 5}s)"
+            )
+        with bf2:
+            if st.button(f"🔍 Backfill {missing}", use_container_width=True):
+                prog = st.progress(0.0, text="Fetching websites...")
+
+                def bf_cb(j, total, name):
+                    prog.progress((j + 1) / total, text=f"[{j + 1}/{total}] {name[:30]}")
+
+                t, em, ig, li = lib.backfill_contacts(bf_cb)
+                prog.empty()
+                st.success(f"✅ {t} leads updated | +{em} emails | +{ig} IG | +{li} LinkedIn")
+                st.session_state.pop("inbox_df", None)
+                st.session_state.pop("inbox_df_id_set", None)
+                st.rerun()
+
     # === Bulk Email Send (Resend or Gmail, PDPO compliant) ===
     email_provider, email_cfg = lib.load_email_config()
     leads_with_email = [l for l in leads if l.get("email") and l.get("status") == "Drafted"]
